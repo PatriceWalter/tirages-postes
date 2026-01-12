@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tirage des Postes</title>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
+        .modal-bg { background-color: rgba(15, 23, 42, 0.8); backdrop-filter: blur(4px); }
+        
+        @media (max-width: 768px) {
+            .table-responsive { display: none; }
+            .cards-responsive { display: block; }
+        }
+        @media (min-width: 769px) {
+            .table-responsive { display: block; }
+            .cards-responsive { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="max-w-6xl mx-auto p-3 md:p-8"></div>
+    <div id="modal-container"></div>
+
+    <script>
+        // ===== CONFIGURATION FIREBASE (À REMPLACER) =====
+        const firebaseConfig = {
+            apiKey: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+            authDomain: "XXXXXXXXX.firebaseapp.com",
+            projectId: "XXXXXXXXX",
+            storageBucket: "XXXXXXXXX.appspot.com",
+            messagingSenderId: "XXXXXXXXX",
+            appId: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        };
+        // ================================================
+        
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        let state = {
+            isLoggedIn: sessionStorage.getItem('auth_tirage') === 'true',
+            currentPage: 'index',
+            teams: [],
+            orderDrawn: false,
+            drawOrder: [],
+            mode: null, // 'precision' ou 'flechettes'
+            precisionResults: {},
+            flechettesResults: {},
+            postesAttribues: {},
+            contestInfo: { title: 'TIRAGE DES POSTES', date: '2025' }
+        };
+
+        // Blocage bouton retour Android
+        history.pushState(null, null, location.href);
+        window.onpopstate = function() {
+            history.pushState(null, null, location.href);
+        };
+
+        // Écoute Firebase
+        db.collection("data").doc("tirage-data").onSnapshot(doc => {
+            if(doc.exists) {
+                const d = doc.data();
+                state.teams = d.teams || [];
+                state.orderDrawn = d.orderDrawn || false;
+                state.drawOrder = d.drawOrder || [];
+                state.mode = d.mode || null;
+                state.precisionResults = d.precisionResults || {};
+                state.flechettesResults = d.flechettesResults || {};
+                state.postesAttribues = d.postesAttribues || {};
+                state.contestInfo = d.contestInfo || state.contestInfo;
+                render();
+            }
+        });
+
+        const save = async () => {
+            await db.collection("data").doc("tirage-data").set({
+                teams: state.teams,
+                orderDrawn: state.orderDrawn,
+                drawOrder: state.drawOrder,
+                mode: state.mode,
+                precisionResults: state.precisionResults,
+                flechettesResults: state.flechettesResults,
+                postesAttribues: state.postesAttribues,
+                contestInfo: state.contestInfo
+            });
+        };
+
+        // Authentification
+        window.login = () => {
+            const mdp = document.getElementById('l_mdp').value;
+            if(mdp === "911") {
+                state.isLoggedIn = true;
+                sessionStorage.setItem('auth_tirage', 'true');
+                render();
+            } else {
+                alert("Mot de passe incorrect");
+            }
+        };
+
+        window.logout = () => {
+            if(confirm("Voulez-vous vraiment vous déconnecter ?")) {
+                state.isLoggedIn = false;
+                sessionStorage.removeItem('auth_tirage');
+                render();
+            }
+        };
+
+        window.nav = (page) => {
+            state.currentPage = page;
+            render();
+        };
+
+        // Zones fléchettes
+        const flechettesZones = [
+            { label: 'Hors cible', value: 0 },
+            { label: 'Bull (50)', value: 50 },
+            { label: 'Outer Bull (25)', value: 25 },
+            ...Array.from({length: 20}, (_, i) => ({ label: `Simple ${i+1}`, value: i+1 })),
+            ...Array.from({length: 20}, (_, i) => ({ label: `Double ${i+1}`, value: (i+1)*2 })),
+            ...Array.from({length: 20}, (_, i) => ({ label: `Triple ${i+1}`, value: (i+1)*3 }))
+        ].sort((a, b) => b.value - a.value);
+
+        // Calculs
+        const calc = {
+            getBestPrecision: (teamId) => {
+                const r = state.precisionResults[teamId];
+                if(!r) return null;
+                const l1 = parseFloat(r.lancer1) || 999;
+                const l2 = parseFloat(r.lancer2) || 999;
+                const best = Math.min(l1, l2);
+                return best === 999 ? null : best;
+            },
+            getTotalFlechettes: (teamId) => {
+                const r = state.flechettesResults[teamId];
+                if(!r) return 0;
+                let total = 0;
+                for(let i = 1; i <= 6; i++) {
+                    total += parseInt(r[`f${i}`]) || 0;
+                }
+                return total;
+            },
+            getClassement: () => {
+                const teamsWithResults = state.drawOrder.map(teamId => {
+                    const team = state.teams.find(t => t.id === teamId);
+                    if(state.mode === 'precision') {
+                        return { ...team, score: calc.getBestPrecision(teamId) };
+                    } else {
+                        return { ...team, score: calc.getTotalFlechettes(teamId) };
+                    }
+                });
+
+                if(state.mode === 'precision') {
+                    // Plus petit = meilleur
+                    return teamsWithResults.sort((a, b) => {
+                        if(a.score === null) return 1;
+                        if(b.score === null) return -1;
+                        return a.score - b.score;
+                    });
+                } else {
+                    // Plus grand = meilleur
+                    return teamsWithResults.sort((a, b) => b.score - a.score);
+                }
+            }
+        };
+
+        function render() {
+            const root = document.getElementById('app');
+
+            if(!state.isLoggedIn) {
+                root.innerHTML = `
+                <div class="min-h-[60vh] flex items-center justify-center px-4">
+                    <div class="bg-white p-6 md:p-10 rounded-[2rem] md:rounded-[2.5rem] shadow-xl w-full max-w-sm border text-center">
+                        <div class="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <i data-lucide="target" class="w-8 h-8 text-indigo-600"></i>
+                        </div>
+                        <h2 class="text-xl md:text-2xl font-black mb-6 text-indigo-900 uppercase italic">Tirage des Postes</h2>
+                        <div class="mb-4 text-left">
+                            <label class="text-[10px] font-black uppercase text-slate-400 ml-2">Identifiant</label>
+                            <input value="aappma" disabled class="w-full p-3 md:p-4 border rounded-xl md:rounded-2xl font-bold bg-slate-100 uppercase outline-none text-slate-400 text-sm">
+                        </div>
+                        <div class="mb-6 text-left">
+                            <label class="text-[10px] font-black uppercase text-slate-400 ml-2">Mot de passe</label>
+                            <input id="l_mdp" type="password" placeholder="Saisir le code" class="w-full p-3 md:p-4 border rounded-xl md:rounded-2xl font-bold bg-slate-50 outline-none focus:border-indigo-600 text-sm">
+                        </div>
+                        <button onclick="login()" class="w-full bg-indigo-600 text-white font-black py-3 md:py-4 rounded-xl md:rounded-2xl shadow-lg uppercase italic text-sm">Entrer</button>
+                    </div>
+                </div>`;
+                lucide.createIcons();
+                return;
+            }
+
+            switch(state.currentPage) {
+                case 'index': renderIndex(root); break;
+                case 'inscriptions': renderInscriptions(root); break;
+                case 'tirage': renderTirage(root); break;
+                case 'precision': renderPrecision(root); break;
+                case 'flechettes': renderFlechettes(root); break;
+                case 'attribution': renderAttribution(root); break;
+                case 'settings': renderSettings(root); break;
+            }
+            lucide.createIcons();
+        }
+
+        function renderIndex(container) {
+            container.innerHTML = `
+                <div class="flex justify-between items-center mb-6 md:mb-8">
+                    <button onclick="nav('settings')" class="p-2 md:p-3 bg-white border rounded-full text-indigo-600 shadow-sm hover:bg-indigo-50 transition-colors">
+                        <i data-lucide="settings" class="w-5 h-5 md:w-6 md:h-6"></i>
+                    </button>
+                    <button onclick="logout()" class="p-2 md:p-3 bg-red-50 border border-red-100 rounded-full text-red-600 shadow-sm hover:bg-red-100 transition-colors">
+                        <i data-lucide="log-out" class="w-5 h-5 md:w-6 md:h-6"></i>
+                    </button>
+                </div>
+                
+                <div class="text-center mb-8 md:mb-12">
+                    <h1 class="text-3xl md:text-5xl font-black text-indigo-900 uppercase italic tracking-tighter">${state.contestInfo.title}</h1>
+                    <div class="inline-block px-5 md:px-8 py-2 md:py-3 bg-indigo-600 text-white rounded-full font-bold uppercase text-[10px] md:text-xs mt-3 shadow-lg">${state.contestInfo.date}</div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 max-w-3xl mx-auto">
+                    <button onclick="nav('inscriptions')" class="p-5 md:p-6 bg-gradient-to-br from-orange-500 to-orange-600 text-white rounded-2xl md:rounded-3xl shadow-xl font-black hover:scale-[0.98] transition-transform flex items-center gap-4">
+                        <i data-lucide="users" class="w-8 h-8 flex-shrink-0"></i>
+                        <div class="text-left">
+                            <span class="text-lg md:text-xl block">Inscriptions</span>
+                            <span class="text-[10px] md:text-xs opacity-70 font-medium">${state.teams.length}/10 équipes</span>
+                        </div>
+                    </button>
+                    
+                    <button onclick="nav('tirage')" class="p-5 md:p-6 bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-2xl md:rounded-3xl shadow-xl font-black hover:scale-[0.98] transition-transform flex items-center gap-4">
+                        <i data-lucide="shuffle" class="w-8 h-8 flex-shrink-0"></i>
+                        <div class="text-left">
+                            <span class="text-lg md:text-xl block">Tirage Ordre</span>
+                            <span class="text-[10px] md:text-xs opacity-70 font-medium">${state.orderDrawn ? '✅ Effectué' : '⏳ En attente'}</span>
+                        </div>
+                    </button>
+                    
+                    <button onclick="nav('precision')" class="p-5 md:p-6 bg-gradient-to-br from-emerald-500 to-emerald-600 text-white rounded-2xl md:rounded-3xl shadow-xl font-black hover:scale-[0.98] transition-transform flex items-center gap-4 ${!state.orderDrawn ? 'opacity-50' : ''}">
+                        <i data-lucide="target" class="w-8 h-8 flex-shrink-0"></i>
+                        <div class="text-left">
+                            <span class="text-lg md:text-xl block">Lancer Précision</span>
+                            <span class="text-[10px] md:text-xs opacity-70 font-medium">☀️ Beau temps</span>
+                        </div>
+                    </button>
+                    
+                    <button onclick="nav('flechettes')" class="p-5 md:p-6 bg-gradient-to-br from-blue-500 to-blue-600 text-white rounded-2xl md:rounded-3xl shadow-xl font-black hover:scale-[0.98] transition-transform flex items-center gap-4 ${!state.orderDrawn ? 'opacity-50' : ''}">
+                        <i data-lucide="circle-dot" class="w-8 h-8 flex-shrink-0"></i>
+                        <div class="text-left">
+                            <span class="text-lg md:text-xl block">Lancer Fléchettes</span>
+                            <span class="text-[10px] md:text-xs opacity-70 font-medium">🌧️ Intempéries</span>
+                        </div>
+                    </button>
+                    
+                    <button onclick="nav('attribution')" class="p-5 md:p-6 bg-gradient-to-br from-yellow-500 to-yellow-600 text-white rounded-2xl md:rounded-3xl shadow-xl font-black hover:scale-[0.98] transition-transform flex items-center gap-4 md:col-span-2 ${!state.mode ? 'opacity-50' : ''}">
+                        <i data-lucide="trophy" class="w-8 h-8 flex-shrink-0"></i>
+                        <div class="text-left">
+                            <span class="text-lg md:text-xl block">Attribution des Postes</span>
+                            <span class="text-[10px] md:text-xs opacity-70 font-medium">${state.mode ? (state.mode === 'precision' ? '🎯 Mode Précision' : '🎯 Mode Fléchettes') : 'Classement & choix'}</span>
+                        </div>
+                    </button>
+                </div>
+            `;
+        }
+
+        function renderInscriptions(container) {
+            container.innerHTML = `
+                <button onclick="nav('index')" class="mb-4 md:mb-8 flex items-center text-indigo-600 font-bold underline italic text-sm">
+                    <i data-lucide="arrow-left" class="mr-2 w-4 h-4"></i> Retour
+                </button>
+                
+                <div class="bg-white p-4 md:p-8 rounded-2xl md:rounded-[2.5rem] shadow-xl border mb-6 max-w-2xl mx-auto">
+                    <h2 class="text-lg md:text-2xl font-black text-indigo-900 uppercase mb-4 md:mb-6 italic text-center">Inscrire une Équipe</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 mb-4 md:mb-6">
+                        <div class="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                            <h3 class="font-black text-indigo-600 uppercase text-[10px] tracking-widest italic">Pêcheur n°1</h3>
+                            <input id="in_nom1" placeholder="NOM" class="w-full p-3 border-2 border-white rounded-xl font-bold uppercase shadow-sm outline-none focus:border-indigo-600 text-sm">
+                            <input id="in_prenom1" placeholder="PRÉNOM" class="w-full p-3 border-2 border-white rounded-xl font-bold shadow-sm outline-none focus:border-indigo-600 text-sm">
+                        </div>
+                        <div class="space-y-3 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                            <h3 class="font-black text-indigo-600 uppercase text-[10px] tracking-widest italic">Pêcheur n°2</h3>
+                            <input id="in_nom2" placeholder="NOM" class="w-full p-3 border-2 border-white rounded-xl font-bold uppercase shadow-sm outline-none focus:border-indigo-600 text-sm">
+                            <input id="in_prenom2" placeholder="PRÉNOM" class="w-full p-3 border-2 border-white rounded-xl font-bold shadow-sm outline-none focus:border-indigo-600 text-sm">
+                        </div>
+                    </div>
+                    <button onclick="addTeam()" class="w-full bg-indigo-600 text-white font-black py-4 rounded-xl md:rounded-2xl shadow-xl uppercase italic hover:bg-indigo-700 transition-colors text-sm" ${state.teams.length >= 10 ? 'disabled' : ''}>
+                        ${state.teams.length >= 10 ? 'Maximum 10 équipes atteint' : 'Ajouter l\'équipe'}
+                    </button>
+                </div>
+
+                <div class="max-w-2xl mx-auto">
+                    <h3 class="text-base md:text-xl font-black text-indigo-900 uppercase italic mb-3 flex items-center">
+                        <i data-lucide="users" class="mr-2 w-5 h-5"></i> Équipes inscrites (${state.teams.length}/10)
+                    </h3>
+                    <div class="space-y-3">
+                        ${state.teams.length ? state.teams.map((t, idx) => `
+                        <div class="bg-white p-4 rounded-2xl border shadow-sm flex justify-between items-center">
+                            <div class="flex items-center gap-3">
+                                <span class="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center font-black">${idx + 1}</span>
+                                <div>
+                                    <p class="font-black text-indigo-900 uppercase text-sm italic">${t.nom1} ${t.prenom1}</p>
+                                    <p class="font-bold text-slate-400 uppercase text-xs italic">${t.nom2} ${t.prenom2}</p>
+                                </div>
+                            </div>
+                            <button onclick="deleteTeam('${t.id}')" class="p-2 text-red-300 hover:text-red-600 transition-colors">
+                                <i data-lucide="trash-2" class="w-5 h-5"></i>
+                            </button>
+                        </div>`).join('') : '<p class="text-slate-400 italic text-center py-8">Aucune équipe inscrite</p>'}
+                    </div>
+                </div>
+            `;
+        }
+
+        window.addTeam = () => {
+            if(state.teams.length >= 10) return alert("Maximum 10 équipes !");
+            const n1 = document.getElementById('in_nom1').value.toUpperCase().trim();
+            const p1 = document.getElementById('in_prenom1').value.trim();
+            const n2 = document.getElementById('in_nom2').value.toUpperCase().trim();
+            const p2 = document.getElementById('in_prenom2').value.trim();
+            if(!n1 || !n2) return alert("Veuillez remplir les noms.");
+            
+            const id = 'team_' + Date.now();
+            state.teams.push({ id, nom1: n1, prenom1: p1, nom2: n2, prenom2: p2 });
+            save();
+            
+            document.getElementById('in_nom1').value = '';
+            document.getElementById('in_prenom1').value = '';
+            document.getElementById('in_nom2').value = '';
+            document.getElementById('in_prenom2').value = '';
+        };
+
+        window.deleteTeam = (id) => {
+            if(!confirm("Supprimer cette équipe ?")) return;
+            state.teams = state.teams.filter(t => t.id !== id);
+            state.drawOrder = state.drawOrder.filter(tid => tid !== id);
+            delete state.precisionResults[id];
+            delete state.flechettesResults[id];
+            delete state.postesAttribues[id];
+            save();
+        };
+
+        function renderTirage(container) {
+            container.innerHTML = `
+                <button onclick="nav('index')" class="mb-4 md:mb-8 flex items-center text-indigo-600 font-bold underline italic text-sm">
+                    <i data-lucide="arrow-left" class="mr-2 w-4 h-4"></i> Retour
+                </button>
+                
+                <div class="text-center mb-6">
+                    <h2 class="text-2xl md:text-3xl font-black text-indigo-900 uppercase italic">Tirage au Sort</h2>
+                    <p class="text-slate-500 text-sm mt-2">Déterminer l'ordre de passage</p>
+                </div>
+
+                <div class="max-w-2xl mx-auto mb-6">
+                    <button onclick="doTirage()" class="w-full p-5 bg-gradient-to-r from-purple-600 to-purple-500 text-white rounded-2xl shadow-xl font-black hover:scale-[0.98] transition-transform italic flex items-center justify-center gap-3 ${state.teams.length < 2 ? 'opacity-50' : ''}">
+                        <i data-lucide="shuffle" class="w-6 h-6"></i>
+                        <span class="text-lg">${state.orderDrawn ? 'Refaire le tirage' : 'Lancer le tirage'}</span>
+                    </button>
+                </div>
+
+                ${state.orderDrawn ? `
+                <div class="max-w-2xl mx-auto">
+                    <h3 class="text-base md:text-xl font-black text-emerald-600 uppercase italic mb-3 flex items-center">
+                        <i data-lucide="list-ordered" class="mr-2 w-5 h-5"></i> Ordre de passage
+                    </h3>
+                    <div class="space-y-2">
+                        ${state.drawOrder.map((teamId, idx) => {
+                            const t = state.teams.find(team => team.id === teamId);
+                            if(!t) return '';
+                            return `
+                            <div class="bg-white p-4 rounded-2xl border shadow-sm flex items-center gap-4">
+                                <span class="w-12 h-12 bg-gradient-to-br from-purple-500 to-purple-600 text-white rounded-xl flex items-center justify-center font-black text-xl">${idx + 1}</span>
+                                <div>
+                                    <p class="font-black text-indigo-900 uppercase text-sm italic">${t.nom1} ${t.prenom1}</p>
+                                    <p class="font-bold text-slate-400 uppercase text-xs italic">${t.nom2} ${t.prenom2}</p>
+                                </div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>` : `
+                <div class="text-center py-12 text-slate-400">
+                    <i data-lucide="shuffle" class="w-16 h-16 mx-auto mb-4 opacity-30"></i>
+                    <p class="italic">Cliquez sur le bouton pour effectuer le tirage</p>
+                </div>`}
+            `;
+        }
+
+        window.doTirage = () => {
+            if(state.teams.length < 2) return alert("Il faut au moins 2 équipes !");
+            if(state.orderDrawn && !confirm("Refaire le tirage ? Les résultats actuels seront perdus.")) return;
+            
+            // Mélange aléatoire (Fisher-Yates)
+            const ids = state.teams.map(t => t.id);
+            for(let i = ids.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [ids[i], ids[j]] = [ids[j], ids[i]];
+            }
+            
+            state.drawOrder = ids;
+            state.orderDrawn = true;
+            state.precisionResults = {};
+            state.flechettesResults = {};
+            state.postesAttribues = {};
+            state.mode = null;
+            save();
+        };
+
+        function renderPrecision(container) {
+            if(!state.orderDrawn) return nav('index');
+            
+            container.innerHTML = `
+                <button onclick="nav('index')" class="mb-4 md:mb-8 flex items-center text-indigo-600 font-bold underline italic text-sm">
+                    <i data-lucide="arrow-left" class="mr-2 w-4 h-4"></i> Retour
+                </button>
+                
+                <div class="text-center mb-6">
+                    <h2 class="text-2xl md:text-3xl font-black text-emerald-600 uppercase italic">🎯 Lancer de Précision</h2>
+                    <p class="text-slate-500 text-sm mt-2">Distance en mètres - Le plus proche gagne</p>
+                </div>
+
+                <div class="max-w-4xl mx-auto">
+                    <!-- Version mobile -->
+                    <div class="cards-responsive space-y-3">
+                        ${state.drawOrder.map((teamId, idx) => {
+                            const t = state.teams.find(team => team.id === teamId);
+                            if(!t) return '';
+                            const r = state.precisionResults[teamId] || {};
+                            const best = calc.getBestPrecision(teamId);
+                            return `
+                            <div class="bg-white p-4 rounded-2xl border shadow-sm">
+                                <div class="flex items-center gap-3 mb-3">
+                                    <span class="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center font-black">${idx + 1}</span>
+                                    <div class="flex-1">
+                                        <p class="font-black text-indigo-900 uppercase text-xs italic">${t.nom1} / ${t.nom2}</p>
+                                    </div>
+                                    ${best !== null ? `<span class="bg-emerald-100 text-emerald-700 px-3 py-1 rounded-lg font-black text-sm">${best.toFixed(2)} m</span>` : ''}
+                                </div>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label class="text-[9px] font-black uppercase text-slate-400">Lancer 1</label>
+                                        <input type="number" step="0.01" placeholder="0.00" value="${r.lancer1 || ''}" onchange="updatePrecision('${teamId}', 'lancer1', this.value)" class="w-full p-2 border rounded-lg font-bold text-center text-sm">
+                                    </div>
+                                    <div>
+                                        <label class="text-[9px] font-black uppercase text-slate-400">Lancer 2</label>
+                                        <input type="number" step="0.01" placeholder="0.00" value="${r.lancer2 || ''}" onchange="updatePrecision('${teamId}', 'lancer2', this.value)" class="w-full p-2 border rounded-lg font-bold text-center text-sm">
+                                    </div>
+                                </div>
+                            </div>`;
+                        }).join('')}
+                    </div>
+
+                    <!-- Version desktop -->
+                    <div class="table-responsive bg-white rounded-2xl shadow-xl border overflow-hidden">
+                        <table class="w-full">
+                            <thead class="bg-emerald-600 text-white text-xs uppercase font-black">
+                                <tr>
+                                    <th class="p-4 text-left">Ordre</th>
+                                    <th class="p-4 text-left">Équipe</th>
+                                    <th class="p-4 text-center">Lancer 1 (m)</th>
+                                    <th class="p-4 text-center">Lancer 2 (m)</th>
+                                    <th class="p-4 text-center">Meilleur</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${state.drawOrder.map((teamId, idx) => {
+                                    const t = state.teams.find(team => team.id === teamId);
+                                    if(!t) return '';
+                                    const r = state.precisionResults[teamId] || {};
+                                    const best = calc.getBestPrecision(teamId);
+                                    return `
+                                    <tr class="border-b border-slate-100 hover:bg-slate-50">
+                                        <td class="p-4"><span class="w-10 h-10 bg-emerald-100 text-emerald-600 rounded-xl flex items-center justify-center font-black">${idx + 1}</span></td>
+                                        <td class="p-4 font-black text-indigo-900 uppercase text-sm italic">${t.nom1} / ${t.nom2}</td>
+                                        <td class="p-4 text-center">
+                                            <input type="number" step="0.01" placeholder="0.00" value="${r.lancer1 || ''}" onchange="updatePrecision('${teamId}', 'lancer1', this.value)" class="w-24 p-2 border rounded-lg font-bold text-center">
+                                        </td>
+                                        <td class="p-4 text-center">
+                                            <input type="number" step="0.01" placeholder="0.00" value="${r.lancer2 || ''}" onchange="updatePrecision('${teamId}', 'lancer2', this.value)" class="w-24 p-2 border rounded-lg font-bold text-center">
+                                        </td>
+                                        <td class="p-4 text-center font-black text-lg text-emerald-600">${best !== null ? best.toFixed(2) + ' m' : '---'}</td>
+                                    </tr>`;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="max-w-4xl mx-auto mt-6">
+                    <button onclick="validerPrecision()" class="w-full p-4 bg-gradient-to-r from-emerald-600 to-emerald-500 text-white rounded-2xl shadow-xl font-black hover:scale-[0.98] transition-transform italic flex items-center justify-center gap-3">
+                        <i data-lucide="check-circle" class="w-6 h-6"></i>
+                        <span>Valider et voir le classement</span>
+                    </button>
+                </div>
+            `;
+        }
+
+        window.updatePrecision = (teamId, field, value) => {
+            if(!state.precisionResults[teamId]) state.precisionResults[teamId] = {};
+            state.precisionResults[teamId][field] = value;
+            save();
+        };
+
+        window.validerPrecision = () => {
+            state.mode = 'precision';
+            save();
+            nav('attribution');
+        };
+
+        function renderFlechettes(container) {
+            if(!state.orderDrawn) return nav('index');
+            
+            const zoneOptions = flechettesZones.map(z => `<option value="${z.value}">${z.label}</option>`).join('');
+            
+            container.innerHTML = `
+                <button onclick="nav('index')" class="mb-4 md:mb-8 flex items-center text-indigo-600 font-bold underline italic text-sm">
+                    <i data-lucide="arrow-left" class="mr-2 w-4 h-4"></i> Retour
+                </button>
+                
+                <div class="text-center mb-6">
+                    <h2 class="text-2xl md:text-3xl font-black text-blue-600 uppercase italic">🎯 Lancer de Fléchettes</h2>
+                    <p class="text-slate-500 text-sm mt-2">2 séries × 3 fléchettes - Le plus de points gagne</p>
+                </div>
+
+                <div class="max-w-4xl mx-auto space-y-4">
+                    ${state.drawOrder.map((teamId, idx) => {
+                        const t = state.teams.find(team => team.id === teamId);
+                        if(!t) return '';
+                        const r = state.flechettesResults[teamId] || {};
+                        const total = calc.getTotalFlechettes(teamId);
+                        return `
+                        <div class="bg-white p-4 md:p-6 rounded-2xl border shadow-sm">
+                            <div class="flex items-center gap-3 mb-4">
+                                <span class="w-10 h-10 bg-blue-100 text-blue-600 rounded-xl flex items-center justify-center font-black">${idx + 1}</span>
+                                <div class="flex-1">
+                                    <p class="font-black text-indigo-900 uppercase text-sm italic">${t.nom1} / ${t.nom2}</p>
+                                </div>
+                                <span class="bg-blue-600 text-white px-4 py-2 rounded-xl font-black text-lg">${total} pts</span>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4">
+                                <div class="p-3 bg-slate-50 rounded-xl">
+                                    <p class="text-[10px] font-black uppercase text-slate-400 mb-2">Série 1</p>
+                                    <div class="space-y-2">
+                                        <select onchange="updateFlechettes('${teamId}', 'f1', this.value)" class="w-full p-2 border rounded-lg font-bold text-sm">
+                                            <option value="">Fléchette 1</option>
+                                            ${zoneOptions.replace(`value="${r.f1 || ''}"`, `value="${r.f1 || ''}" selected`)}
+                                        </select>
+                                        <select onchange="updateFlechettes('${teamId}', 'f2', this.value)" class="w-full p-2 border rounded-lg font-bold text-sm">
+                                            <option value="">Fléchette 2</option>
+                                            ${zoneOptions.replace(`value="${r.f2 || ''}"`, `value="${r.f2 || ''}" selected`)}
+                                        </select>
+                                        <select onchange="updateFlechettes('${teamId}', 'f3', this.value)" class="w-full p-2 border rounded-lg font-bold text-sm">
+                                            <option value="">Fléchette 3</option>
+                                            ${zoneOptions.replace(`value="${r.f3 || ''}"`, `value="${r.f3 || ''}" selected`)}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="p-3 bg-slate-50 rounded-xl">
+                                    <p class="text-[10px] font-black uppercase text-slate-400 mb-2">Série 2</p>
+                                    <div class="space-y-2">
+                                        <select onchange="updateFlechettes('${teamId}', 'f4', this.value)" class="w-full p-2 border rounded-lg font-bold text-sm">
+                                            <option value="">Fléchette 4</option>
+                                            ${zoneOptions.replace(`value="${r.f4 || ''}"`, `value="${r.f4 || ''}" selected`)}
+                                        </select>
+                                        <select onchange="updateFlechettes('${teamId}', 'f5', this.value)" class="w-full p-2 border rounded-lg font-bold text-sm">
+                                            <option value="">Fléchette 5</option>
+                                            ${zoneOptions.replace(`value="${r.f5 || ''}"`, `value="${r.f5 || ''}" selected`)}
+                                        </select>
+                                        <select onchange="updateFlechettes('${teamId}', 'f6', this.value)" class="w-full p-2 border rounded-lg font-bold text-sm">
+                                            <option value="">Fléchette 6</option>
+                                            ${zoneOptions.replace(`value="${r.f6 || ''}"`, `value="${r.f6 || ''}" selected`)}
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+
+                <div class="max-w-4xl mx-auto mt-6">
+                    <button onclick="validerFlechettes()" class="w-full p-4 bg-gradient-to-r from-blue-600 to-blue-500 text-white rounded-2xl shadow-xl font-black hover:scale-[0.98] transition-transform italic flex items-center justify-center gap-3">
+                        <i data-lucide="check-circle" class="w-6 h-6"></i>
+                        <span>Valider et voir le classement</span>
+                    </button>
+                </div>
+            `;
+
+            // Restaurer les valeurs sélectionnées
+            setTimeout(() => {
+                state.drawOrder.forEach(teamId => {
+                    const r = state.flechettesResults[teamId] || {};
+                    for(let i = 1; i <= 6; i++) {
+                        if(r[`f${i}`] !== undefined) {
+                            const selects = document.querySelectorAll(`select[onchange*="${teamId}"][onchange*="f${i}"]`);
+                            selects.forEach(sel => sel.value = r[`f${i}`]);
+                        }
+                    }
+                });
+            }, 100);
+        }
+
+        window.updateFlechettes = (teamId, field, value) => {
+            if(!state.flechettesResults[teamId]) state.flechettesResults[teamId] = {};
+            state.flechettesResults[teamId][field] = parseInt(value) || 0;
+            save();
+        };
+
+        window.validerFlechettes = () => {
+            state.mode = 'flechettes';
+            save();
+            nav('attribution');
+        };
+
+        function renderAttribution(container) {
+            if(!state.mode) return nav('index');
+            
+            const classement = calc.getClassement();
+            const postesDisponibles = Array.from({length: 10}, (_, i) => i + 1);
+            const postesPris = Object.values(state.postesAttribues);
+
+            container.innerHTML = `
+                <button onclick="nav('index')" class="mb-4 md:mb-8 flex items-center text-indigo-600 font-bold underline italic text-sm">
+                    <i data-lucide="arrow-left" class="mr-2 w-4 h-4"></i> Retour
+                </button>
+                
+                <div class="text-center mb-6">
+                    <h2 class="text-2xl md:text-3xl font-black text-yellow-600 uppercase italic">🏆 Attribution des Postes</h2>
+                    <p class="text-slate-500 text-sm mt-2">Mode : ${state.mode === 'precision' ? '🎯 Lancer de Précision' : '🎯 Fléchettes'}</p>
+                </div>
+
+                <div class="max-w-3xl mx-auto space-y-3">
+                    ${classement.map((t, idx) => {
+                        const posteChoisi = state.postesAttribues[t.id];
+                        const optionsPostes = postesDisponibles.map(p => {
+                            const pris = postesPris.includes(p) && posteChoisi !== p;
+                            return `<option value="${p}" ${pris ? 'disabled' : ''} ${posteChoisi === p ? 'selected' : ''}>${p}${pris ? ' (pris)' : ''}</option>`;
+                        }).join('');
+
+                        return `
+                        <div class="bg-white p-4 rounded-2xl border shadow-sm ${idx < 3 ? 'ring-2 ring-yellow-400' : ''}">
+                            <div class="flex items-center gap-3">
+                                <span class="w-12 h-12 flex items-center justify-center rounded-xl font-black text-xl flex-shrink-0 ${idx===0?'bg-gradient-to-br from-yellow-400 to-yellow-500 text-white shadow-lg':idx===1?'bg-gradient-to-br from-slate-300 to-slate-400 text-white':idx===2?'bg-gradient-to-br from-orange-400 to-orange-500 text-white':'bg-slate-100 text-slate-400'}">${idx + 1}</span>
+                                <div class="flex-1 min-w-0">
+                                    <p class="font-black text-indigo-900 uppercase text-sm italic truncate">${t.nom1} ${t.prenom1}</p>
+                                    <p class="font-bold text-slate-400 uppercase text-xs italic truncate">${t.nom2} ${t.prenom2}</p>
+                                </div>
+                                <div class="text-right mr-3">
+                                    <span class="font-black text-lg ${state.mode === 'precision' ? 'text-emerald-600' : 'text-blue-600'}">
+                                        ${t.score !== null ? (state.mode === 'precision' ? t.score.toFixed(2) + ' m' : t.score + ' pts') : '---'}
+                                    </span>
+                                </div>
+                                <select onchange="attribuerPoste('${t.id}', this.value)" class="p-3 border-2 border-slate-100 rounded-xl font-black bg-slate-50 text-indigo-900 w-24">
+                                    <option value="">Poste</option>
+                                    ${optionsPostes}
+                                </select>
+                            </div>
+                        </div>`;
+                    }).join('')}
+                </div>
+
+                <div class="max-w-3xl mx-auto mt-8 p-4 bg-slate-100 rounded-2xl">
+                    <h3 class="font-black text-slate-600 uppercase text-sm mb-3 text-center">Postes attribués</h3>
+                    <div class="grid grid-cols-5 md:grid-cols-10 gap-2">
+                        ${postesDisponibles.map(p => {
+                            const teamId = Object.keys(state.postesAttribues).find(tid => state.postesAttribues[tid] === p);
+                            const team = teamId ? state.teams.find(t => t.id === teamId) : null;
+                            return `
+                            <div class="p-2 rounded-xl text-center ${team ? 'bg-indigo-600 text-white' : 'bg-white border'}">
+                                <span class="font-black block">${p}</span>
+                                ${team ? `<span class="text-[8px] block truncate">${team.nom1}</span>` : ''}
+                            </div>`;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+
+        window.attribuerPoste = (teamId, poste) => {
+            if(poste === '') {
+                delete state.postesAttribues[teamId];
+            } else {
+                state.postesAttribues[teamId] = parseInt(poste);
+            }
+            save();
+        };
+
+        function renderSettings(container) {
+            container.innerHTML = `
+                <button onclick="nav('index')" class="mb-4 md:mb-8 flex items-center text-indigo-600 font-bold underline italic text-sm">
+                    <i data-lucide="arrow-left" class="mr-2 w-4 h-4"></i> Retour
+                </button>
+                <div class="bg-white p-6 md:p-10 rounded-2xl md:rounded-[2.5rem] shadow-xl border max-w-lg mx-auto">
+                    <h2 class="text-xl md:text-2xl font-black text-indigo-900 mb-6 md:mb-8 uppercase italic">Paramètres</h2>
+                    <div class="space-y-4 md:space-y-6">
+                        <div>
+                            <label class="text-[10px] font-black uppercase text-slate-400 ml-2">Titre</label>
+                            <input id="set_title" value="${state.contestInfo.title}" class="w-full p-3 md:p-4 border rounded-xl md:rounded-2xl font-bold bg-slate-50 outline-none text-sm">
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-black uppercase text-slate-400 ml-2">Date / Info</label>
+                            <input id="set_date" value="${state.contestInfo.date}" class="w-full p-3 md:p-4 border rounded-xl md:rounded-2xl font-bold bg-slate-50 outline-none text-sm">
+                        </div>
+                        <button onclick="updateSettings()" class="w-full bg-indigo-600 text-white font-black py-3 md:py-4 rounded-xl md:rounded-2xl shadow-xl uppercase italic text-sm">Enregistrer</button>
+                        <hr class="my-4">
+                        <button onclick="resetAll()" class="w-full bg-red-50 text-red-600 font-bold py-3 md:py-4 rounded-xl md:rounded-2xl italic text-sm">⚠️ Réinitialiser tout</button>
+                    </div>
+                </div>`;
+        }
+
+        window.updateSettings = () => {
+            state.contestInfo.title = document.getElementById('set_title').value;
+            state.contestInfo.date = document.getElementById('set_date').value;
+            save();
+            nav('index');
+        };
+
+        window.resetAll = () => {
+            const pwd = prompt("Mot de passe admin :");
+            if(pwd !== "admin") return alert("Accès refusé");
+            if(!confirm("⚠️ ATTENTION !\n\nVoulez-vous vraiment tout réinitialiser ?\n\n- Équipes\n- Tirage\n- Résultats\n- Postes attribués")) return;
+            
+            state.teams = [];
+            state.orderDrawn = false;
+            state.drawOrder = [];
+            state.mode = null;
+            state.precisionResults = {};
+            state.flechettesResults = {};
+            state.postesAttribues = {};
+            save();
+            nav('index');
+        };
+
+        render();
+    </script>
+</body>
+</html>
