@@ -581,7 +581,7 @@
 
                 <!-- CIBLE INTERACTIVE -->
                 <div class="flex justify-center mb-4">
-                    <svg id="dartboard" viewBox="0 0 400 400" class="w-72 h-72 md:w-96 md:h-96 cursor-pointer">
+                    <svg id="dartboard" viewBox="0 0 450 450" class="w-80 h-80 md:w-[450px] md:h-[450px] cursor-pointer">
                         ${generateDartboardSVG()}
                     </svg>
                 </div>
@@ -637,28 +637,28 @@
         }
 
         function generateDartboardSVG() {
-            const cx = 200, cy = 200;
+            const cx = 225, cy = 225;
             const colors = { black: '#1a1a1a', white: '#f5f5dc', red: '#e63946', green: '#2d6a4f' };
             
-            // Rayons des zones
+            // Rayons des zones (agrandis)
             const R = {
                 outer: 170,      // Bord extérieur double
-                doubleIn: 160,   // Intérieur double
-                tripleOut: 107,  // Extérieur triple
-                tripleIn: 99,    // Intérieur triple
+                doubleIn: 158,   // Intérieur double
+                tripleOut: 105,  // Extérieur triple
+                tripleIn: 95,    // Intérieur triple
                 outerBull: 32,   // Outer bull
-                bull: 12.7       // Bull
+                bull: 14         // Bull
             };
 
             let svg = '';
             
-            // Fond noir
+            // Fond noir de la cible
             svg += `<circle cx="${cx}" cy="${cy}" r="${R.outer}" fill="${colors.black}"/>`;
             
             // Générer les 20 segments
             for(let i = 0; i < 20; i++) {
                 const num = dartNumbers[i];
-                const startAngle = (i * 18 - 99) * Math.PI / 180; // -99 pour aligner le 20 en haut
+                const startAngle = (i * 18 - 99) * Math.PI / 180;
                 const endAngle = ((i + 1) * 18 - 99) * Math.PI / 180;
                 const midAngle = (startAngle + endAngle) / 2;
                 
@@ -679,11 +679,11 @@
                 // Zone Single interne
                 svg += createSegment(cx, cy, R.tripleIn, R.outerBull, startAngle, endAngle, singleColor, `single-in-${num}`, num, `Simple ${num}`);
 
-                // Numéros
-                const textR = R.outer + 15;
+                // Numéros à l'extérieur de la cible
+                const textR = R.outer + 25;
                 const textX = cx + textR * Math.cos(midAngle);
                 const textY = cy + textR * Math.sin(midAngle);
-                svg += `<text x="${textX}" y="${textY}" text-anchor="middle" dominant-baseline="middle" fill="white" font-size="14" font-weight="bold">${num}</text>`;
+                svg += `<text x="${textX}" y="${textY}" text-anchor="middle" dominant-baseline="middle" fill="#1e3a8a" font-size="18" font-weight="900">${num}</text>`;
             }
             
             // Outer Bull (25)
